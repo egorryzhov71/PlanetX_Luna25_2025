@@ -1,2 +1,3 @@
 Ссылка на видео: 
-![qr-code](https://github.com/user-attachments/assets/d5f5aeb5-99ec-46ac-aa00-27a349af4073)
+![image](https://github.com/user-attachments/assets/521287e5-f970-43a7-8c04-e33d4165549a)
+
