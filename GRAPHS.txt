@@ -1,0 +1,115 @@
+import os
+import matplotlib.pyplot as plt
+
+#Вспомогательная функция для проверки существования директории для сохранения
+def ensure_directory(path):
+    if not os.path.exists(path):
+        os.makedirs(path)
+
+#Читает файл данных (с заголовками: время, масса, высота, скорость)
+#и возвращает списки для времени, массы (в тоннах), высоты и скорости.
+def load_data(file_path):
+    time_list = []
+    mass_list = []
+    altitude_list = []
+    speed_list = []
+    with open(file_path, "r", encoding="utf-8") as f:
+        lines = f.read().strip().splitlines()
+    #Пропустить заголовок и обработать непустые строки
+    for line in lines[1:]:
+        if not line.strip():
+            continue
+        parts = [x.strip() for x in line.split(",")]
+        if len(parts) < 4:
+            continue
+        time_list.append(float(parts[0]))
+        mass_list.append(float(parts[1]) / 1000)  # конвертировать кг в тонны
+        altitude_list.append(float(parts[2]))
+        speed_list.append(float(parts[3]))
+    return time_list, mass_list, altitude_list, speed_list
+
+# Загрузка данных KSP
+time_ksp, massa_ksp, height_ksp, speed_ksp = load_data("./data/KSP_Stats.txt")
+# Загрузка данных математической модели
+time_mm, massa_mm, height_mm, speed_mm = load_data("./data/MathModel_Stats.txt")
+
+# Цвета для графиков
+ksp_color    = "#008000"  # Зеленый для KSP
+mm_color     = "#ff0000"  # Красный для математической модели
+massa_color  = "#ff0000"  # Для ошибки в массе
+height_color = "#008000"  # Для ошибки в высоте
+speed_color  = "#0000ff"  # Для ошибки в скорости
+
+#Директория для сохранения графиков
+save_dir = "Files/Data/Graphs_KSP"
+ensure_directory(save_dir)
+
+#Функции для построения графиков
+def Save(name):
+    plt.legend()
+    save_path = os.path.join(save_dir, f"{name}.png")
+    plt.savefig(save_path)
+    #сохраняет текущий график в файл
+    plt.cla()
+    #очищаем текущие оси
+    print(f"График сохранен: {save_path}")
+
+def GraphTimeMassa():
+    plt.xlabel("Время, с")
+    plt.ylabel("Масса, т")
+    plt.plot(time_ksp, massa_ksp, label='KSP', color=ksp_color, linewidth=1)
+    plt.plot(time_mm, massa_mm, label='Math model', color=mm_color, linewidth=1)
+    Save("TimeMassa")
+
+def GraphTimeHeight():
+    plt.xlabel("Время, с")
+    plt.ylabel("Высота, м")
+    plt.plot(time_ksp, height_ksp, label='KSP', color=ksp_color, linewidth=1)
+    plt.plot(time_mm, height_mm, label='Math model', color=mm_color, linewidth=1)
+    Save("TimeHeight")
+
+def GraphTimeSpeed():
+    plt.xlabel("Время, с")
+    plt.ylabel("Скорость, м/c")
+    plt.plot(time_ksp, speed_ksp, label='KSP', color=ksp_color, linewidth=1)
+    plt.plot(time_mm, speed_mm, label='Math model', color=mm_color, linewidth=1)
+    Save("TimeSpeed")
+
+def GraphHeightSpeed():
+    plt.xlabel("Высота, м")
+    plt.ylabel("Скорость, м/c")
+    plt.plot(height_ksp, speed_ksp, label='KSP', color=ksp_color, linewidth=1)
+    plt.plot(height_mm, speed_mm, label='Math model', color=mm_color, linewidth=1)
+    Save("HeightSpeed")
+
+def ErrorRate():
+    plt.title("Относительная погрешность")
+    plt.xlabel("Время, с")
+    plt.ylabel("Погрешность, %")
+    # Используем более короткий массив времени для общего диапазона.
+    common_time = time_ksp if len(time_ksp) <= len(time_mm) else time_mm
+    error_rate_massa = []
+    error_rate_height = []
+    error_rate_speed = []
+    # Начинаем вычисления с индекса 10 (чтобы пропустить шум при старте)
+    for i in range(10, len(common_time)):
+        # Избегаем деления на ноль (предполагаем, что данные модели не равны нулю)
+        err_mass = abs((massa_ksp[i] - massa_mm[i]) / massa_mm[i] * 100) if massa_mm[i] != 0 else 0
+        err_height = abs((height_ksp[i] - height_mm[i]) / height_mm[i] * 100) if height_mm[i] != 0 else 0
+        err_speed = abs((speed_ksp[i] - speed_mm[i]) / speed_mm[i] * 100) if speed_mm[i] != 0 else 0
+        error_rate_massa.append(err_mass)
+        error_rate_height.append(err_height)
+        error_rate_speed.append(err_speed)
+    # Строим график ошибок, используя соответствующую часть общего массива времени
+    plt.plot(common_time[10:], error_rate_massa, label='Масса', color=massa_color, linewidth=1)
+    plt.plot(common_time[10:], error_rate_height, label='Высота', color=height_color, linewidth=1)
+    plt.plot(common_time[10:], error_rate_speed, label='Скорость', color=speed_color, linewidth=1)
+    Save("ErrorRate")
+
+GraphTimeMassa()
+GraphTimeHeight()
+GraphTimeSpeed()
+GraphHeightSpeed()
+ErrorRate()
+
+print("Графики сохранены в ./data/Graphs_KSP")
