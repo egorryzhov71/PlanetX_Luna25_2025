@@ -1,0 +1,300 @@
+import os
+import numpy as np
+
+
+class Constants:
+    # Содержит параметры моделирования, физические константы и параметры ракеты
+    # Для Союз-2.1б с модулем Фрегат, запускающей полезную нагрузку Луна-25.
+
+    TIME_STEP = 0.02  # [с] шаг времени для каждого обновления симуляции
+    MULTIPLIER = 100
+
+    # Физические константы
+    G = 6.67e-11  # [м^3/(кг*с^2)] гравитационная постоянная
+    P0 = 101325  # [Па] атмосферное давление на уровне моря
+    M_AIR = 0.02898  # [кг/моль] молярная масса воздуха
+    R_UNIVERSAL = 8.314  # [Дж/(моль*K)] универсальная газовая постоянная
+    R_SPECIFIC = 287.05  # [Дж/(кг*K)] удельная газовая постоянная для сухого воздуха
+    T0 = 288.15  # [K] опорная температура
+
+    # Параметры Кербина
+    EARTH_MASS = 5.29e22  # [кг]
+    EARTH_RADIUS = 600000  # [м] радиус Кербина
+    EARTH_ANG_VEL = 2.91e-4  # [рад/с] угловая скорость Кербина
+
+    # Параметры первой ступени Союз‑2.1б (бустеры + блок-ядро)
+    DRY_MASS_FIRST_STAGE = 19520  # [кг] сухая масса первой ступени
+    FUEL_MASS_FIRST_STAGE = 96000  # [кг] масса топлива первой ступени
+    Q_FIRST_STAGE = 524  # [кг/с] номинальная скорость расхода топлива
+
+    # Тяга (Н): с учётом давления
+    F0_FIRST_STAGE = 374.194 * 4 * 1000  # [Н] тяга на уровне моря
+    F1_FIRST_STAGE = 400 * 4 * 1000  # [Н] (расчётная тяга в вакууме)
+
+    # Удельный импульс (с): I0 – вакуумный, I1 – на уровне моря.
+    I0_FIRST_STAGE = 290  # [с] вакуумный удельный импульс
+    I1_FIRST_STAGE = 310   # [с] удельный импульс на уровне моря
+
+    # Параметры второй ступени
+    DRY_MASS_SECOND_STAGE = 7825  # [кг] сухая масса второй ступени
+    FUEL_MASS_SECOND_STAGE = 37000  # [кг] масса топлива второй ступени
+    Q_SECOND_STAGE = 206.5  # [кг/с] номинальная скорость расхода (приблизительно)
+    F0_SECOND_STAGE = 568.75 * 1000  # [Н] тяга на уровне моря
+    F1_SECOND_STAGE = 650 * 1000  # [Н] (расчётная тяга в вакууме)
+    I0_SECOND_STAGE = 280   # [с] удельный импульс в вакууме
+    I1_SECOND_STAGE = 320  # [с]
+
+    # Полезная нагрузка: Luna‑25
+    OTHER_MASS = 12665  # [кг] масса посадочного модуля Luna‑25 + 3 ступень
+
+    # Аэродинамические свойства (приблизительно)
+    C_D = 0.115  # коэффициент сопротивления
+    A_EFF = 1.77  # [м^2] эффективная площадь поперечного сечения
+
+
+# Вспомогательные функции для работы с векторами
+class VectorMath:
+
+    @staticmethod
+    # Евклидова норма вектора
+    def length(v):
+        return np.sqrt(v[0] ** 2 + v[1] ** 2 + v[2] ** 2)
+
+    @staticmethod
+    # Поворачивает вектор v в плоскости x-z на угол angle_deg.
+    def rotate_vector(v, angle_deg):
+        angle_rad = np.deg2rad(angle_deg)
+        # градусы в радианы
+        if v[2] < 0:
+            alpha = np.arctan(v[0] / v[2]) - angle_rad + np.pi
+        elif v[2] > 0:
+            alpha = np.arctan(v[0] / v[2]) - angle_rad
+        else:
+            alpha = -angle_rad
+        return [np.sin(alpha), 0, np.cos(alpha)]
+
+    @staticmethod
+    # Возвращает угол вектора v относительно оси z (в плоскости x-z).
+    def find_angle(v):
+        if v[2] < 0:
+            return np.arctan(v[0] / v[2]) + np.pi
+        elif v[2] > 0:
+            return np.arctan(v[0] / v[2])
+        else:
+            return np.pi / 2
+
+
+# Представляет состояние и физику летательного аппарата.
+# В этой модели:
+# Стадия 0 — первая ступень Союз-2.1б.
+# Стадия 1 — верхняя ступень Фрегат.
+# Полезная нагрузка Луна-25 добавляется как OTHER_MASS.
+class Rocket:
+    # Начальные условия:
+    time = 0.0
+    position = [Constants.EARTH_RADIUS, 0, 0]
+    # на экваторе
+    velocity = [0, 0, Constants.EARTH_ANG_VEL * Constants.EARTH_RADIUS]
+
+    # Фиксированные управляющие установки
+    throttle = 1.0
+    steering = 90.0
+
+    # Стадия (первая ступень, вторая ступень)
+    stage = 0
+    fuel_first_stage = Constants.FUEL_MASS_FIRST_STAGE
+    fuel_second_stage = Constants.FUEL_MASS_SECOND_STAGE
+    # массы топлива ступеней
+
+    @staticmethod
+    # Возвращает текущую высоту над поверхностью Земли [м].
+    def altitude():
+        return VectorMath.length(Rocket.position) - Constants.EARTH_RADIUS
+
+    @staticmethod
+    # Возвращает ускорение свободного падения на текущей высоте [м/с²]
+    def gravity():
+        alt = Rocket.altitude()
+        return Constants.G * Constants.EARTH_MASS / (Constants.EARTH_RADIUS + alt) ** 2
+
+    @staticmethod
+    # Возвращает атмосферную температуру [K] по кусочно-линейной модели.
+    def temperature():
+        h = Rocket.altitude()
+        if h <= 11000:
+            return Constants.T0 - 6.5 * h / 1000
+        elif h <= 20000:
+            return Constants.T0 - 71.5
+        elif h <= 32000:
+            return Constants.T0 - 71.5 + 1 * (h - 20000) / 1000
+        elif h <= 47000:
+            return Constants.T0 - 59.5 + 2.8 * (h - 32000) / 1000
+        elif h <= 51000:
+            return Constants.T0 - 17.5
+        elif h <= 71000:
+            return Constants.T0 - 17.5 - 2.8 * (h - 51000) / 1000
+        return Constants.T0 - 73.5
+
+    @staticmethod
+    # Возвращает атмосферное давление на текущей высоте.
+    # (Экспоненциальное затухание используется до 100 км.)
+    def pressure_at_altitude():
+        h = Rocket.altitude()
+        if h <= 100000:
+            return Constants.P0 * np.exp(-Constants.M_AIR * Rocket.gravity() * h /
+                                         (Constants.R_UNIVERSAL * Rocket.temperature()))
+        return 0
+
+    @staticmethod
+    # Возвращает плотность воздуха [кг/м³] на текущей высоте.
+    def density():
+        return Rocket.pressure_at_altitude() / (Constants.R_SPECIFIC * Rocket.temperature())
+
+    @staticmethod
+    # Возвращает вектор орбитальной скорости [м/с] в текущем положении,
+    # предполагая круговое движение из-за вращения Земли.
+    def orbital_velocity():
+        angle = VectorMath.find_angle(Rocket.position)
+        # угол между положением ракеты и осью Z в плоскости X-Z.
+        r = VectorMath.length(Rocket.position)
+        return [-np.cos(angle) * Constants.EARTH_ANG_VEL * r,
+                0,
+                np.sin(angle) * Constants.EARTH_ANG_VEL * r]
+        # Вычисляем скорость вращения Земли в данной точке:
+        # По оси X: -cos(angle) * ω * r
+        # По оси Z: sin(angle) * ω * r
+
+    @staticmethod
+    # Возвращает скорость [м/с] ракеты относительно локальной орбитальной скорости.
+    def relative_speed():
+        orb_vel = Rocket.orbital_velocity()
+        rel_vel = [Rocket.velocity[i] - orb_vel[i] for i in range(3)]
+        return VectorMath.length(rel_vel)
+
+    @staticmethod
+    # Вычисляет общую массу [кг] аппарата.
+    def total_mass():
+        if Rocket.stage == 0:
+            return (Rocket.fuel_first_stage + Rocket.fuel_second_stage +
+                    Constants.DRY_MASS_FIRST_STAGE + Constants.DRY_MASS_SECOND_STAGE +
+                    Constants.OTHER_MASS)
+        elif Rocket.stage == 1:
+            return (Rocket.fuel_second_stage +
+                    Constants.DRY_MASS_SECOND_STAGE + Constants.OTHER_MASS)
+        return Constants.OTHER_MASS
+
+    @staticmethod
+    # Возвращает эффективный удельный импульс [с], интерполируя между вакуумными
+    # и уровнем моря значениями в зависимости от окружающего давления.
+    def effective_I():
+        pa = Rocket.pressure_at_altitude()
+        if Rocket.stage == 0:
+            return Constants.I0_FIRST_STAGE - (Constants.I0_FIRST_STAGE - Constants.I1_FIRST_STAGE) * pa / Constants.P0
+        elif Rocket.stage == 1:
+            return Constants.I0_SECOND_STAGE - (Constants.I0_SECOND_STAGE - Constants.I1_SECOND_STAGE) * pa / Constants.P0
+        return 0
+
+    @staticmethod
+    # Вычисляет скорость расхода топлива с учётом номинального значения, скорректированного по удельному импульсу.
+    def fuel_consumption_rate():
+        if Rocket.stage == 0:
+            return Constants.Q_FIRST_STAGE * Constants.I0_FIRST_STAGE / Rocket.effective_I()
+        elif Rocket.stage == 1:
+            return Constants.Q_SECOND_STAGE * Constants.I0_SECOND_STAGE / Rocket.effective_I()
+        return 0
+
+    @staticmethod
+    # Вычисляет тягу двигателя в зависимости от окружающего давления.
+    def thrust():
+        pa = Rocket.pressure_at_altitude()
+        if Rocket.stage == 0:
+            return Constants.F0_FIRST_STAGE - (Constants.F0_FIRST_STAGE - Constants.F1_FIRST_STAGE) * pa / Constants.P0 + (Constants.F0_SECOND_STAGE - (Constants.F0_SECOND_STAGE - Constants.F1_SECOND_STAGE) * pa / Constants.P0)
+        elif Rocket.stage == 1:
+            return Constants.F0_SECOND_STAGE - (Constants.F0_SECOND_STAGE - Constants.F1_SECOND_STAGE) * pa / Constants.P0
+        return 0
+
+
+# Симуляция (Обновление математической модели)
+# Обновляет физику ракеты на каждом шаге симуляции.
+# Включает работу двигателей (тяга), гравитацию, аэродинамическое сопротивление и отсоединение ступеней.
+class Simulation:
+
+    @staticmethod
+    def fixed_update():
+        Rocket.time += Constants.TIME_STEP
+        # Увеличиваем время симуляции на фиксированный шаг
+        old_velocity = Rocket.velocity.copy()
+        # сохраняет текущую скорость ракеты (для метода трапеций и других расчётов)
+
+        # Двигательная тяга
+        thrust_direction = VectorMath.rotate_vector(Rocket.position, 90 - Rocket.steering)
+        # Вычисляем направление тяги: поворачиваем вектор положения на (90 - steering) градусов
+        acceleration = (Rocket.thrust() * Rocket.throttle / Rocket.total_mass())
+        Rocket.velocity = [Rocket.velocity[i] + thrust_direction[i] * acceleration * Constants.TIME_STEP for i in range(3)]
+
+        # Гравитация
+        pos_norm = VectorMath.length(Rocket.position)
+        # длина вектора положения ракеты
+        gravity_vector = [Rocket.position[i] * Rocket.gravity() / pos_norm for i in range(3)]
+        Rocket.velocity = [Rocket.velocity[i] - gravity_vector[i] * Constants.TIME_STEP for i in range(3)]
+
+        # Аэродинамическое сопротивление
+        speed = VectorMath.length(Rocket.velocity)
+        drag_acc = (0.5 * Rocket.density() * speed ** 2 * Constants.C_D * Constants.A_EFF / Rocket.total_mass())
+        Rocket.velocity = [Rocket.velocity[i] - (Rocket.velocity[i] * drag_acc * Constants.TIME_STEP / speed)
+                           for i in range(3)]
+
+        # Обновление положения (метод трапеций)
+        Rocket.position = [Rocket.position[i] + (Rocket.velocity[i] + old_velocity[i]) * Constants.TIME_STEP / 2
+                           for i in range(3)]
+        if Rocket.altitude() < 0:
+            norm = VectorMath.length(Rocket.position)
+            Rocket.position = [Rocket.position[i] * Constants.EARTH_RADIUS / norm for i in range(3)]
+        # Если ракета оказалась ниже поверхности Земли, её положение корректируется так,
+        # чтобы ракета оставалась на поверхности Земли, устанавливая её радиус равным радиусу Земли.
+
+        # Расход топлива и отсоединение ступеней
+        consumption = Rocket.fuel_consumption_rate() * Rocket.throttle * Constants.TIME_STEP
+        if Rocket.stage == 0:
+            Rocket.fuel_first_stage -= consumption
+            Rocket.fuel_second_stage -= (Constants.Q_SECOND_STAGE * Constants.I0_SECOND_STAGE / Rocket.effective_I()) * Rocket.throttle * Constants.TIME_STEP
+            if Rocket.fuel_first_stage < 0 or Rocket.time >= 160:
+                Rocket.fuel_first_stage = 0
+                # Отсоединение ступени: сбрасываем сухую массу первой ступени
+                Rocket.stage = 1
+                print(f"Отсоединение ступени в момент {Rocket.time:.2f} с, высота {Rocket.altitude():.2f} м")
+        elif Rocket.stage == 1:
+            Rocket.fuel_second_stage -= consumption
+            if Rocket.fuel_second_stage < 0:
+                Rocket.fuel_second_stage = 0
+
+
+# Основной цикл симуляции и запись данных
+if __name__ == '__main__':
+    # Фиксированные управляющие установки для данной математической модели.
+    Rocket.throttle = 1.0
+    Rocket.steering = 90.0
+
+    os.makedirs("data", exist_ok=True)
+
+    # Формируем заголовок для лог-файла: время, общая масса, высота, относительная скорость.
+    data_log = "time, mass, altitude, speed\n"
+    iteration_counter = 0
+    total_iterations = 8850
+
+    for i in range(total_iterations):
+        Simulation.fixed_update()
+        iteration_counter += 1
+
+        # Записываем данные каждые 50 шагов.
+        if iteration_counter == 50:
+            log_line = (f"{Rocket.time:.2f}, {Rocket.total_mass():.2f}, {Rocket.altitude():.2f}, {Rocket.relative_speed():.2f}\n")
+            data_log += log_line
+            iteration_counter = 0
+
+    # Записываем лог в файл "data/MathModel_Stats.txt"
+    file_path = os.path.join("data", "MathModel_Stats.txt")
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(data_log)
+
+    print(f"Данные сохранены в {file_path}")
