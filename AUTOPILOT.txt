@@ -1,0 +1,501 @@
+import krpc #Для взаимодействия с Kerbal Space Program
+import time #Для работы с временными функциями
+import _thread as thread #Для многопоточности
+import math #Для математических операций
+import msgpack #Для эффективной сериализации данных
+from time import sleep #функция для приостановки выполнения программы
+
+#vessel представляет собой объект, связанный с космическим аппаратом
+
+def monitor(vessel):
+    sleep(3)
+    while True:
+        #Получаем информацию о ресурсах на текущем этапе
+        resources = vessel.resources_in_decouple_stage(vessel.control.current_stage - 1, False)
+        solidFuel = resources.amount("SolidFuel")
+        #Метод, который возвращает количество твердого топлива на текущей ступени
+        liquidFuel = resources.amount("LiquidFuel")
+        #Метод, который возвращает количество жидкого топлива на текущей ступени
+        print(liquidFuel)
+        #Полезно, чтобы видеть, как уменьшается топливо
+
+        if abs(liquidFuel) <= 0.1:
+            vessel.control.activate_next_stage()
+            print()
+            print("Отделение ступени!")
+            print()
+        sleep(0.2)
+        #Проверяем состояние топлива каждые 0.2 секунды
+
+#вычисляет приблизительную скорость расхода массы топлива
+def approximate_mass_burn_rate(vessel):
+    mass_burn_rate = 0
+    #Для накопления общей скорости расхода массы топлива всех активных двигателей
+    engines = vessel.parts.engines
+    #Получает список всех двигателей
+    for engine in engines:
+        if engine.active or engine.available_thrust > 0:
+            if engine.part.name == "liquidEngine":
+                mass_burn_rate += 0.078926
+                #Фиксированная скорость расхода массы топлива для двигателя
+            elif engine.part.name == "liquidEngine3.v2" or engine.part.name == "liquidEngine3":
+                mass_burn_rate += 0.017734
+            elif engine.part.name == "liquidEngine2":
+                mass_burn_rate += 0.068512
+    return mass_burn_rate
+    #Суммарную скорость расхода массы топлива всех активных двигателей
+
+#Функция отвечает за вывод ракеты на орбиту
+def go_to_orbit(vessel, space_center, connection, ascentProfileConstant=1.25):
+    #ascentProfileConstant - Параметр, определяющий профиль подъема ракеты.
+    #Чем выше значение, тем более плавным будет гравитационный поворот.
+    vessel.control.rcs = True
+    #Включает систему ориентации RCS(реактивные двигатели малой тяги),
+    #которая помогает стабилизировать и управлять ракетой.
+    vessel.control.throttle = 1
+    apoapsisStream = connection.add_stream(getattr, vessel.orbit, 'высота апоцентра')
+    #Создает поток данных для отслеживания высоты апоцентра
+    vessel.auto_pilot.engage()
+    vessel.auto_pilot.target_heading = 90
+    #курс ракеты на восток
+
+    #Достигаем нужного апоцентра/завершаем гравитационный поворот
+    while apoapsisStream() < 75000:
+        targetPitch = 90 - ((90/(75000**ascentProfileConstant))*(apoapsisStream()**ascentProfileConstant))
+        #Вычисляет текущий угол наклона ракеты
+        print("Текущий угол наклона:", targetPitch, "с высотой апоцентра", apoapsisStream())
+        #Устанавливаем угол наклона ракеты в автопилоте
+        vessel.auto_pilot.target_pitch = targetPitch
+        sleep(0.1)
+
+    vessel.control.throttle = 0
+    #Останавливает двигатели, когда апоцентр достигает 75 км
+
+    timeToApoapsistream = connection.add_stream(getattr, vessel.orbit, 'время до апоцентра')
+    #Создает поток данных для отслеживания времени до апоцентра
+    periapsisStream = connection.add_stream(getattr, vessel.orbit, 'высота перицентра')
+    #Создает поток данных для отслеживания высоты перицентра
+
+    #Ждем, пока не подойдет момент для циркуляризации орбиты
+    while(timeToApoapsisStream() > 22):
+        sleep(0.5)
+    vessel.control.throttle = 0.5
+    lastUT = space_center.ut
+    #Сохраняет текущее время в игре
+    lastTimeToAp = timeToApoapsisStream()
+    #Сохраняет текущее время до апоцентра
+
+    #Цикл выполняется до тех пор, пока высота перицентра не достигнет 70.5 км
+    #(минимальная высота для стабильной орбиты)
+    while(periapsisStream() < 70500):
+        sleep(0.2)
+        timeToAp = timeToApoapsisStream()
+        #Вычисляет изменение времени до апоцентра за секунду.
+        #Это используется для оценки, насколько эффективно ракета приближается к апоцентру.
+        UT = space_center.ut
+        #Сохраняет текущее игровое время
+        deltaTimeToAp = (timeToAp - lastTimeToAp) / (space_center.ut - lastUT)
+        #Формула вычисляет, как быстро изменяется время до апоцентра за одну секунду игрового времени
+
+        print("Ожидаемое изменение времени до апоцентра в секунду:", deltaTimeToAp)
+
+        if deltaTimeToAp < -0.3:
+            vessel.control.throttle += 0.03
+        elif deltaTimeToAp < -0.1:
+            vessel.control.throttle += 0.01
+        #Если время до апоцентра уменьшается, увеличиваем тягу двигателя
+
+        if deltaTimeToAp > 0.2:
+            vessel.control.throttle -= 0.03
+        elif deltaTimeToAp > 0:
+            vessel.control.throttle -= 0.01
+        #Если время до апоцентра увеличивается, уменьшаем тягу двигателя
+
+        lastTimeToAp = timeToApoapsisStream()
+        lastUT = space_center.ut
+        #Обновляем значения времени до апоцентра и текущего времени
+
+    vessel.control.throttle = 0
+    print("Апоцентр: ", apoapsisStream())
+    print("Перицентр: ", periapsisStream())
+    print("Орбита достигнута!")
+    print()
+
+#Вычисляет время, необходимое для торможения космического аппарата до заданной скорости
+def velocity_intercept(vessel, initial_velocity, tolerance=0.01, thrust_multiplier=1):
+
+    current_body = vessel.orbit.body
+    #Получает объект небесного тела, вокруг которого вращается космический аппарат
+    if initial_velocity > 0:
+        initial_velocity *= -1
+    #Меняем знак скорости для корректного вычисления
+
+    time = 10
+    #Начальное предположение времени торможения
+    thrust = thrust_multiplier * 0.99 * (vessel.max_vacuum_thrust/1000) # Приведение тяги к тонн-секундам
+    #Вычисляет тягу двигателя в тоннах-секундах
+
+    #Корректируем направление тяги в зависимости от ориентации корабля
+    direction = vessel.flight(vessel.surface_reference_frame).direction
+    #Возвращает направление движения аппарата в системе отсчета поверхности.
+    multiplier = direction[0]
+    #Компонент направления по оси X
+    thrust = thrust * abs(multiplier)
+    #Уменьшает тягу, если направление не совпадает с осью X
+
+    gravity_accel = current_body.surface_gravity
+    #Гравитационное ускорение на поверхности текущего небесного тела
+    mass = vessel.mass / 1000
+    #Масса корабля в тоннах
+    mass_burn_rate = approximate_mass_burn_rate(vessel) # Скорость расхода массы
+    #Вычисляет скорость расхода массы аппарата
+
+    velocity = 1
+    #Инициализация скорости для начала бинарного поиска
+
+    #Границы бинарного поиска
+    upper_bound = 92
+    #Верхняя граница времени торможения
+    lower_bound = 0
+    #Нижняя граница времени торможения
+    num_iterations = 0
+    #Счетчик итераций
+
+    #Бинарный поиск времени торможения, пока Абсолютное значение скорости больше допустимой погрешности и
+    #Время находится в пределах от 0.0001 до 91.99 секунд
+    while abs(velocity) > tolerance and time > 0.0001 and time < 91.99:
+        velocity = (-thrust / mass_burn_rate) * math.log(abs(mass - mass_burn_rate * time)) \
+                   - gravity_accel * time + initial_velocity + (thrust / mass_burn_rate) * math.log(mass)
+        #Формула основана на уравнении Циолковского, которое описывает, как скорость ракеты изменяется в зависимости
+        #от изменения её массы из-за сжигания топлива.
+        num_iterations += 1
+
+        if velocity < 0:
+            lower_bound = time
+            time = (time + upper_bound) / 2
+        elif velocity > 0:
+            upper_bound = time
+            time = (time + lower_bound) / 2
+        #Увеличивает нижнюю границу(уменьшает верхнюю) и пересчитывает time как среднее между
+        #текущим временем и верхней(нижней) границей
+
+    if num_iterations == 0:
+        print(velocity)
+        print(time)
+        print(thrust_multiplier)
+        print()
+    return time
+    #Возвращает рассчитанное время торможения
+
+#Вычисляет прогнозируемую высоту ракеты
+def height_intercept(vessel, time, initial_velocity, current_height, thrust_multiplier = 1):
+
+    current_body = vessel.orbit.body
+
+    thrust = thrust_multiplier * 0.99 * (vessel.max_vacuum_thrust/1000) # Приведение тяги к тонн-секундам
+    #Вычисляет тягу двигателя в тоннах-секундах
+
+    #Корректировка направления тяги в зависимости от ориентации корабля
+
+    direction = vessel.flight(vessel.surface_reference_frame).direction
+    #Возвращает направление движения аппарата в системе отсчета поверхности.
+    multiplier = direction[0]
+    #Компонент направления по оси X
+    thrust = thrust * abs(multiplier)
+    #Уменьшает тягу, если направление не совпадает с осью X
+
+    gravity_accel = current_body.surface_gravity
+    #Получает гравитационное ускорение на поверхности текущего небесного тела
+    mass = vessel.mass/1000
+    #Масса аппарата в тоннах
+    mass_burn_rate = approximate_mass_burn_rate(vessel)
+    #Вычисляет скорость расхода массы аппарата
+
+    if initial_velocity > 0:
+        initial_velocity *= -1
+    #Если начальная скорость положительная, меняет ее знак на отрицательный
+
+    final_height = (-1 / mass_burn_rate**2) * (
+        mass_burn_rate * initial_velocity * (mass - mass_burn_rate * time) + thrust * math.log(mass) * (mass - mass_burn_rate * time)
+        + gravity_accel * (((mass - mass_burn_rate * time)**2) / 2 - mass * (mass - mass_burn_rate * time))
+        - thrust * (mass * math.log(mass - mass_burn_rate * time) - mass_burn_rate * time * math.log(mass - mass_burn_rate * time) - mass + mass_burn_rate * time)
+    ) + current_height + (1/mass_burn_rate**2) * (
+        mass_burn_rate * initial_velocity * mass + thrust * math.log(mass) * mass
+        + gravity_accel * ((mass**2) / 2 - mass**2)
+        - thrust * (mass * math.log(mass) - mass)
+    )
+    #Формула основана на уравнении Циолковского
+    #Вычисляет прогнозируемую высоту аппарата через заданное время
+    #Первая часть вычисляет изменение высоты за время time с учетом изменения массы и тяги
+    #Вторая часть добавляет начальную высоту и корректирует расчет для учета начальных условий
+    return final_height
+
+#функция отвечает за выполнение маневра перехода на орбиту Муны
+def mun_transfer(vessel, space_center, connection):
+    vessel.control.rcs = True
+    #Включает систему ориентации RCS
+
+    for fairing in vessel.parts.fairings:
+        fairing.jettison()
+    #Отделяет обтекатели от ракеты
+
+    vessel.control.antennas = True
+    #Разворачиваем антенны
+
+    # Вычисляем оптимальный фазовый угол для запуска к Мунe
+    destSemiMajor = space_center.bodies["Mun"].orbit.semi_major_axis
+    #Возвращает большую полуось орбиты Муна
+    hohmannSemiMajor = destSemiMajor / 2
+    #Рассчитывает большую полуось орбиты Хоумана, которая используется для перехода с орбиты Кербина на орбиту Муны.
+    #Это среднее значение между радиусом текущей орбиты и радиусом орбиты Муна.
+    neededPhase = 2 * math.pi * (1 / (2 * (destSemiMajor ** 3 / hohmannSemiMajor ** 3) ** (1 / 2)))
+    #Вычисляет оптимальный фазовый угол для запуска к Муну(по закону Кеплера)
+    optimalPhaseAngle = 180 - neededPhase * 180 / math.pi  # В градусах
+    #Преобразует фазовый угол из радиан в градусы
+
+    #Ожидаем подходящего момента
+    phaseAngle = 1080
+    vessel.auto_pilot.engage()
+    vessel.auto_pilot.reference_frame = vessel.orbital_reference_frame
+    #Устанавливает систему отсчета для автопилота
+    vessel.auto_pilot.target_direction = (0.0, 1.0, 0.0)
+    #Устанавливает направление автопилота(вверх)
+
+    angleDec = False
+    #Уменьшается ли угол фазы; используется для проверки, что Муна впереди корабля
+    prevPhase = 0
+    #Переменная для хранения предыдущего значения фазового угла
+    while abs(phaseAngle - optimalPhaseAngle) > 1 or not angleDec:
+        #Выполняется до тех пор, пока фазовый угол не станет близким к оптимальному
+        bodyRadius = space_center.bodies["Mun"].orbit.radius
+        #Радиус орбиты Муна
+        vesselRadius = vessel.orbit.radius
+        #Радиус текущей орбиты ракеты
+        sleep(1)
+        bodyPos = space_center.bodies["Mun"].orbit.position_at(space_center.ut, space_center.bodies["Mun"].reference_frame)
+        #Положение Муна в пространстве в данный момент времени
+        vesselPos = vessel.orbit.position_at(space_center.ut, space_center.bodies["Mun"].reference_frame)
+        #Положение ракеты в пространстве в данный момент времени
+
+        bodyVesselDistance = ((bodyPos[0] - vesselPos[0])**2 + (bodyPos[1] - vesselPos[1])**2 + (bodyPos[2] - vesselPos[2])**2)**(1/2)
+        #Вычисляет расстояние между ракетой и Муной с использованием формулы расстояния в трехмерном пространстве.
+
+        try:
+            phaseAngle = math.acos((bodyRadius**2 + vesselRadius**2 - bodyVesselDistance**2) / (2 * bodyRadius * vesselRadius))
+            #Вычисляет текущий фазовый угол между ракетой и Муном с использованием теоремы косинусов.
+        except:
+            print("Ошибка области! Невозможно вычислить. Ожидайте...")
+            continue
+        phaseAngle = phaseAngle * 180 / math.pi
+        #После успешного вычисления фазового угла он преобразуется в градусы
+
+        if prevPhase - phaseAngle > 0:
+        #Если фазовый угол уменьшается, устанавливается флаг angleDec = True, что означает, что Муна находится впереди ракеты
+            angleDec = True
+            if abs(phaseAngle - optimalPhaseAngle) > 20:
+                space_center.rails_warp_factor = 2
+                #Если разница больше 20°, включается ускорение времени
+            else:
+                space_center.rails_warp_factor = 0
+        else:
+            angleDec = False
+            space_center.rails_warp_factor = 4
+            #Включается максимальное ускорение времени, чтобы дождаться момента, когда Муна окажется впереди ракеты.
+
+        prevPhase = phaseAngle
+
+        print("Фаза:", phaseAngle)
+
+
+    #Рассчитываем необходимое DeltaV
+
+    GM = vessel.orbit.body.gravitational_parameter
+    #Получаем параметр гравитации (GM) для Кербина
+    r = vessel.orbit.radius
+    #Текущий радиус орбиты ракеты
+    a = vessel.orbit.semi_major_axis
+    #Большая полуось текущей орбиты ракеты
+
+    initialV = (GM * ((2/r) - (1/a)))**(1/2)
+    #Текущая орбитальная скорость ракеты, рассчитывается с использованием формулы для орбитальной скорости
+
+    a = (space_center.bodies["Mun"].orbit.radius + vessel.orbit.radius) / 2
+    #Большая полуось орбиты Хоумана, которая используется для перехода с текущей орбиты ракеты на орбиту Муна
+    finalV = (GM * ((2/r) - (1/a)))**(1/2)
+    #Орбитальная скорость, необходимая для перехода на орбиту Хоумана
+
+    deltaV = finalV - initialV
+    print("Маневр сейчас с DeltaV:", deltaV)
+
+    actualDeltaV = 0
+    #Для отслеживания текущего изменения скорости ракеты
+    vessel.control.throttle = 1.0
+    while(deltaV > actualDeltaV):
+    #Завершаем маневр с отклонением
+        sleep(0.5)
+        r = vessel.orbit.radius
+        a = vessel.orbit.semi_major_axis
+        #Большая полуось орбиты
+        actualDeltaV = (GM * ((2/r) - (1/a)))**(1/2) - initialV
+        #Формула для орбитальной скорости объекта на эллиптической орбите
+        print("DeltaV на данный момент: ", actualDeltaV, "из нужных", deltaV)
+    vessel.control.throttle = 0
+    vessel.auto_pilot.disengage()
+    print("Переход на Муну завершен")
+
+#Функция выполняет процесс посадки на Муну
+def go_to_landing(vessel, space_center, connection):
+    vessel.control.rcs = True
+    vessel.control.antennas = True
+    vessel.auto_pilot.engage()
+    vessel.auto_pilot.reference_frame = vessel.surface_velocity_reference_frame
+    #В данном случае используется система отсчета скорости относительно поверхности
+    vessel.auto_pilot.target_direction = (0.0, -1.0, 0.0)
+    #Указываем в сторону ретрограда (против движения)
+
+    vessel.auto_pilot.wait()
+    #Ждем, пока автопилот скорректирует направление
+    time_to_warp = vessel.orbit.time_to_periapsis
+    #Возвращает время до перицентра
+    space_center.warp_to(space_center.ut + time_to_warp - 30)
+    #Дожидаемся 30 секунд до перицентра
+
+    vessel.auto_pilot.wait()
+    #Ждем, пока корабль не зафиксирует направление
+    print("Запуск двигателей. Начало торможения")
+
+    #Начало торможения
+
+    flight = vessel.flight(vessel.orbit.body.reference_frame)
+    #Объект, содержащий данные о текущем полете ракеты
+    surfaceSpeed = connection.add_stream(getattr, flight, 'speed')
+    #Поток данных для отслеживания текущей скорости ракеты относительно поверхности.
+
+    #Начинаем гашение скорости
+    while surfaceSpeed() > 1.0:
+        vessel.control.throttle = 1 - (0.95 / 1.01**surfaceSpeed())
+        #Чем выше скорость, тем больше тяга
+        error = (vessel.auto_pilot.pitch_error**2 + vessel.auto_pilot.heading_error**2)**(1/2)
+        #Вычисляет общую ошибку ориентации с использованием теоремы Пифагора
+
+        if error > 3:
+        #Тяга двигателя отключается, чтобы избежать неконтролируемого движения.
+            vessel.control.throttle = 0
+            while error > 1.2:
+            # программа ждет, пока автопилот скорректирует направление.
+                error = (vessel.auto_pilot.pitch_error ** 2 + vessel.auto_pilot.heading_error ** 2) ** (1 / 2)
+                print("Ошибка направления:", vessel.auto_pilot.error)
+                sleep(0.25)
+
+    vessel.control.throttle = 0
+    print("Подготовка к посадке...")
+    print()
+
+#Управляет процессом посадки корабля
+def begin_landing(vessel, space_center, connection):
+    deployed = False
+    #Отслеживает, развернуты ли посадочные опоры
+
+    current_body = vessel.orbit.body
+    #Получает объект небесного тела, вокруг которого вращается ракета
+    landing_reference_frame = space_center.ReferenceFrame.create_hybrid(
+        position=current_body.reference_frame, rotation=vessel.surface_reference_frame)
+    flight = vessel.flight(landing_reference_frame)
+    #Создает гибридную систему отсчета для посадки
+    #position=current_body.reference_frame: позиция отсчитывается относительно небесного тела.
+    #Ориентация отсчитывается относительно поверхности аппарата.
+
+    while True:
+        #Определяем, сколько времени потребуется для полной остановки
+        time = velocity_intercept(vessel, -flight.velocity[0])
+        #Вычисляет время, необходимое для полной остановки аппарата по горизонтальной скорости
+        height = height_intercept(vessel, time, -flight.velocity[0], flight.surface_altitude)
+        #Вычисляет прогнозируемую высоту аппарата через заданное время
+        print("Прогнозируемая высота:", height)
+
+
+        if height < 1000 and time < 9 and not deployed:
+            deployed = True
+            vessel.control.legs = True
+        #Развертывает посадочные опоры, если выполнены условия
+
+        if height < 8:
+            break
+        #Если прогнозируемая высота меньше 8 метров, завершаем спуск
+
+    print("ЗАПУСК ДВИГАТЕЛЯ")
+    vessel.control.throttle = 1
+    sleep(0.1)
+
+    #Продолжается до тех пор, пока горизонтальная скорость аппарата не станет меньше 1 м/с.
+    while abs(flight.velocity[0]) > 1:
+        if flight.surface_altitude < 30:
+        #Если высота над поверхностью меньше 30 метров
+            print("Отключение автопилота для окончательной посадки...")
+            vessel.auto_pilot.disengage()
+            #Отключает автопилот
+
+        time = velocity_intercept(vessel, -flight.velocity[0], 0.01, vessel.control.throttle)
+        height = height_intercept(vessel, time, -flight.velocity[0], flight.surface_altitude, vessel.control.throttle)
+        #Повторно вычисляет время до остановки и прогнозируемую высоту с учетом текущей тяги двигателя.
+
+        if height > 3.5:
+            vessel.control.throttle -= 0.005
+        elif height < 0.5:
+            vessel.control.throttle += 0.004
+        #Коррекция тяги для мягкой посадки
+
+        if time < 9 and not deployed:
+            print("Разворачиваем посадочные ноги...")
+            deployed = True
+            vessel.control.legs = True
+
+    vessel.auto_pilot.engage()
+    vessel.auto_pilot.target_pitch_and_heading(90, 90)
+    #Устанавливает цель ориентации аппарата вертикально вверх
+    vessel.control.throttle = 0
+    print()
+    print("Конечная высота:", flight.surface_altitude)
+    print("Посадка!")
+
+
+
+#Устанавливаем соединение с сервером kRPC
+connection = krpc.connect("Connection")
+space_center = connection.space_center
+vessel = space_center.active_vessel
+
+#Запускаем поток мониторинга топлива
+args = [vessel]
+thread.start_new_thread(monitor, tuple(args))
+
+#Полёт на Муну
+
+#1. Достигаем низкой орбиты Кербина
+go_to_orbit(vessel, space_center, connection, 0.5)
+
+#2. Маневр перевода на орбиту Муны
+mun_transfer(vessel, space_center, connection)
+time_to_warp = vessel.orbit.next_orbit.time_to_periapsis + vessel.orbit.time_to_soi_change
+space_center.warp_to(space_center.ut + time_to_warp - 300)
+#Ускоряем время на 5 минут до перицентра у Муны
+
+#3. Подготовка к посадке
+go_to_landing(vessel, space_center, connection)
+
+#4. Финальная посадка
+vessel.auto_pilot.engage()
+vessel.auto_pilot.reference_frame = vessel.surface_velocity_reference_frame
+vessel.auto_pilot.target_direction = (0.0, -1.0, 0.0)
+#Указываем ретроградно к поверхности
+begin_landing(vessel, space_center, connection)
+
+#5. Стабилизация после посадки
+print("Стабилизация...")
+vessel.auto_pilot.reference_frame = vessel.surface_reference_frame
+vessel.auto_pilot.target_direction = (1.0, 0.0, 0.0)
+sleep(10)
+vessel.auto_pilot.disengage()
+vessel.control.sas = True
+#Включаем систему стабилизации
+print("ГОТОВО")
