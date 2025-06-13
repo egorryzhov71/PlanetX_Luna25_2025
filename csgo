@@ -1,89 +1,36 @@
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
-from bs4 import BeautifulSoup
-import json
-import time
-import requests
-import re
+import telebot
 
-def resolve_steam64_id(steam_url):
-    if '/profiles/' in steam_url:
-        return steam_url.split('/profiles/')[1].strip('/')
 
-    elif '/id/' in steam_url:
-        custom_id = steam_url.split('/id/')[1].strip('/')
-        xml_url = f'https://steamcommunity.com/id/{custom_id}?xml=1'
-        response = requests.get(xml_url)
-        if response.status_code != 200:
-            print('❌ Не удалось получить XML-профиль Steam.')
-            return None
+bot = telebot.TeleBot('8186254854:AAHuaB_T2LbRlCXoDvihBVC_PM_j109JcoM')
+API = 
 
-        match = re.search(r'<steamID64>(\d+)</steamID64>', response.text)
-        if match:
-            return match.group(1)
-        else:
-            print('❌ SteamID64 не найден.')
-            return None
-    else:
-        print('❌ Некорректная ссылка.')
-        return None
 
-def get_tracker_stats_selenium(steam_id64):
-    url = f'https://tracker.gg/cs2/profile/steam/{steam_id64}/overview'
+@bot.message_handler(commands=['start'])
+def start(message):
+    bot.send_message(message.chat.id, 'bla bla bla')
 
-    # Настройка Chrome в headless-режиме
-    options = Options()
-    options.add_argument('--headless')  # без окна браузера
-    options.add_argument('--disable-gpu')
-    options.add_argument('--no-sandbox')
-    options.add_argument('--log-level=3')
-    options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--window-size=1920,1080')
-    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36")
 
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+@bot.message_handler(content_types=['text'])
+def get_killdeath(message):
+    user_id = message.text.strip()
 
-    print(f'🌐 Открываю профиль: {url}')
-    driver.get(url)
 
-    time.sleep(5)  # даём странице полностью загрузиться
 
-    soup = BeautifulSoup(driver.page_source, 'html.parser')
-    driver.quit()
 
-    script_tag = soup.find('script', id="__NEXT_DATA__")
-    if not script_tag:
-        print('❌ Не удалось найти JSON-данные.')
-        return
+bot.polling(none_stop=True)
 
-    data = json.loads(script_tag.string)
 
-    try:
-        stats = data['props']['pageProps']['playerStats']['segments'][0]['stats']
 
-        kd = stats['kDRatio']['displayValue']
-        hs_percent = stats['headshotPct']['displayValue']
-        matches = stats['matchesPlayed']['displayValue']
+@bot.message_handler(commands=['start'])
+def start(message):
+    bot.send_message(message.chat.id, 'bla bla bla')
 
-        print('📊 Статистика игрока:')
-        print(f'🔫 K/D: {kd}')
-        print(f'🎯 HS%: {hs_percent}')
-        print(f'📁 Матчей сыграно: {matches}')
 
-        return {
-            'kdr': kd,
-            'hs_percent': hs_percent,
-            'matches': matches
-        }
+@bot.message_handler(content_types=['text'])
+def get_killdeath(message):
+    user_id = message.text.strip()
 
-    except KeyError:
-        print('⚠️ Статистика не найдена. Возможно, профиль закрыт или ещё не обработан.')
 
-if __name__ == '__main__':
-    steam_url = input('🔗 Вставьте ссылку на Steam-профиль: ').strip()
-    steam64 = resolve_steam64_id(steam_url)
 
-    if steam64:
-        get_tracker_stats_selenium(steam64)
+
+bot.polling(none_stop=True)
