@@ -1,36 +1,59 @@
 import telebot
-
+import requests
 
 bot = telebot.TeleBot('8186254854:AAHuaB_T2LbRlCXoDvihBVC_PM_j109JcoM')
-API = 
+API = '823828c9-dddb-4dfb-996a-ec22a8fd69b5'
 
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.send_message(message.chat.id, 'bla bla bla')
+    bot.send_message(message.chat.id, 'Введите свой никнейм Faceit')
 
 
 @bot.message_handler(content_types=['text'])
-def get_killdeath(message):
-    user_id = message.text.strip()
+def get_stats(message):
+    nickname = message.text.strip()
 
+    try:
 
+        headers = {"Authorization": f"Bearer {API}"}
+        player_response = requests.get(
+            f"https://open.faceit.com/data/v4/players?nickname={nickname}",headers=headers)
+        
 
+        if player_response.status_code != 200:
+            bot.send_message(message.chat.id, "🔍 Игрок не найден. Проверьте ник.")
+            return
 
-bot.polling(none_stop=True)
+        player_id = player_response.json()["player_id"]
 
+        # Получаем статистику
+        stats_response = requests.get(
+            f"https://open.faceit.com/data/v4/players/{player_id}/games/cs2/stats",
+            headers=headers
+        )
 
+        if stats_response.status_code != 200:
+            bot.send_message(message.chat.id, "❌ Не удалось получить статистику")
+            return
 
-@bot.message_handler(commands=['start'])
-def start(message):
-    bot.send_message(message.chat.id, 'bla bla bla')
+        stats = stats_response.json()
 
+        # Формируем ответ
+        response_text = (
+            f"📊 Статистика {nickname} на Faceit (CS2):\n"
+            f"🔫 K/D Ratio: {stats['lifetime']['Average K/D Ratio']}\n"
+            f"🎯 Средние убийства: {stats['lifetime']['Average Kills']}\n"
+            f"🏆 Всего матчей: {stats['lifetime']['Matches']}\n"
+            f"📈 Win Rate: {stats['lifetime']['Win Rate %']}%"
+        )
 
-@bot.message_handler(content_types=['text'])
-def get_killdeath(message):
-    user_id = message.text.strip()
+        bot.send_message(message.chat.id, response_text)
 
-
+    except KeyError:
+        bot.send_message(message.chat.id, "❌ Не удалось обработать данные игрока")
+    except Exception as e:
+        bot.send_message(message.chat.id, f"⚠️ Произошла ошибка: {str(e)}")
 
 
 bot.polling(none_stop=True)
