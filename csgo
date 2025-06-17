@@ -1,59 +1,144 @@
 import telebot
 import requests
+from telebot import types
+from telebot.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 bot = telebot.TeleBot('8186254854:AAHuaB_T2LbRlCXoDvihBVC_PM_j109JcoM')
-API = '823828c9-dddb-4dfb-996a-ec22a8fd69b5'
+API_KEY = '823828c9-dddb-4dfb-996a-ec22a8fd69b5'
+
+headers = {
+    "Authorization": f"Bearer {API_KEY}"
+}
+
+user_nicknames = {}
+def get_player_stats(nickname, map_name=None):
+    url = f"https://open.faceit.com/data/v4/players?nickname={nickname}"
+    res = requests.get(url, headers=headers)
+    if res.status_code != 200:
+        return None, f"Ошибка при получении игрока: {res.status_code}"
+
+    data = res.json()
+    player_id = data.get("player_id")
+    if not player_id:
+        return None, "Игрок не найден."
+
+    game_id = 'cs2'
+    stats_url = f'https://open.faceit.com/data/v4/players/{player_id}/stats/{game_id}'
+
+    stats_res = requests.get(stats_url, headers=headers)
+    if stats_res.status_code != 200:
+        return None, f"Ошибка при получении статистики: {stats_res.status_code}"
+
+    stats = stats_res.json()
+
+    try:
+        elo = data["games"]["cs2"]["faceit_elo"]
+    except KeyError:
+        elo = "Нет данных ELO"
+
+    if not map_name or map_name == "overall":
+        try:
+            kd_ratio = stats["lifetime"]["Average K/D Ratio"]
+            matches = stats["lifetime"]["Matches"]
+            winrate = stats["lifetime"]["Win Rate %"]
+            utility_damage = stats["lifetime"]["Utility Damage per Round"]
+            return {
+                "elo": elo,
+                "kd_ratio": kd_ratio,
+                "matches": matches,
+                "winrate": winrate,
+                "utility_damage": utility_damage,
+                "nickname": nickname,
+                "map": "Общая"
+            }, None
+        except KeyError:
+            return None, "Не удалось извлечь общую статистику."
+
+    else:
+        maps_stats = [seg for seg in stats.get("segments", []) if seg.get("type") == "Map"]
+        for segment in maps_stats:
+            if segment.get("label", "").lower() == map_name.lower():
+                stats_map = segment.get("stats", {})
+                try:
+                    kd_ratio = stats_map.get("Average K/D Ratio", "Нет данных")
+                    matches = stats_map.get("Matches", "Нет данных")
+                    winrate = stats_map.get("Win Rate %", "Нет данных")
+                    utility_damage = stats_map.get("Utility Damage per Round", "Нет данных")
+                    return {
+                        "elo": elo,
+                        "kd_ratio": kd_ratio,
+                        "matches": matches,
+                        "winrate": winrate,
+                        "utility_damage": utility_damage,
+                        "nickname": nickname,
+                        "map": segment.get("label")
+                    }, None
+                except KeyError:
+                    return None, f"Не удалось извлечь статистику по карте {map_name}."
+
+        return None, f"Статистика по карте '{map_name}' не найдена."
 
 
 @bot.message_handler(commands=['start'])
 def start(message):
     bot.send_message(message.chat.id, 'Введите свой никнейм Faceit')
 
-
 @bot.message_handler(content_types=['text'])
-def get_stats(message):
+def map(message):
     nickname = message.text.strip()
+    user_nicknames[message.chat.id] = nickname
+    markup = types.InlineKeyboardMarkup()
+    markup.add(
+    InlineKeyboardButton("Общая статистика", callback_data="stats_overall"),
+        InlineKeyboardButton("Mirage", callback_data="map_mirage"),
+        InlineKeyboardButton("Dust II", callback_data="map_dust2"),
+        InlineKeyboardButton("Inferno", callback_data="map_inferno"),
+        InlineKeyboardButton("Ancient", callback_data="map_ancient"),
+        InlineKeyboardButton("Anubis", callback_data="map_anubis"),
+        InlineKeyboardButton("Nuke", callback_data="map_nuke"),
+        InlineKeyboardButton("Train", callback_data="map_train"),
+    )
+    bot.reply_to(message, 'Выберите карту:', reply_markup=markup)
 
-    try:
 
-        headers = {"Authorization": f"Bearer {API}"}
-        player_response = requests.get(
-            f"https://open.faceit.com/data/v4/players?nickname={nickname}",headers=headers)
-        
 
-        if player_response.status_code != 200:
-            bot.send_message(message.chat.id, "🔍 Игрок не найден. Проверьте ник.")
+    @bot.callback_query_handler(func=lambda call: True)
+    def callback_message(call):
+        chat_id = call.message.chat.id
+
+        if chat_id not in user_nicknames:
+            bot.answer_callback_query(call.id, "Сначала отправьте свой никнейм.")
             return
 
-        player_id = player_response.json()["player_id"]
+        nickname = user_nicknames[chat_id]
 
-        # Получаем статистику
-        stats_response = requests.get(
-            f"https://open.faceit.com/data/v4/players/{player_id}/games/cs2/stats",
-            headers=headers
-        )
-
-        if stats_response.status_code != 200:
-            bot.send_message(message.chat.id, "❌ Не удалось получить статистику")
+        if call.data == 'stats_overall':
+            map_name = "overall"
+        elif call.data.startswith("map_"):
+            map_name = call.data[4:]
+        else:
+            bot.answer_callback_query(call.id, "Неизвестная команда.")
             return
 
-        stats = stats_response.json()
+        stats, error = get_player_stats(nickname, map_name)
+        if error:
+            bot.answer_callback_query(call.id, error)
+            return
 
-        # Формируем ответ
-        response_text = (
-            f"📊 Статистика {nickname} на Faceit (CS2):\n"
-            f"🔫 K/D Ratio: {stats['lifetime']['Average K/D Ratio']}\n"
-            f"🎯 Средние убийства: {stats['lifetime']['Average Kills']}\n"
-            f"🏆 Всего матчей: {stats['lifetime']['Matches']}\n"
-            f"📈 Win Rate: {stats['lifetime']['Win Rate %']}%"
+        text = (f"📊 Статистика {stats['nickname']} (карта: {stats['map']}):\n"
+                f"ELO: {stats['elo']}\n"
+                f"K/D: {stats['kd_ratio']}\n"
+                f"Винрейт: {stats['winrate']} %\n"
+                f"Средний урон гранатами за раунд: {stats['utility_damage']} HP\n"
+                f"Матчей сыграно: {stats['matches']}")
+
+        bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+            text=text,
+            reply_markup=call.message.reply_markup
         )
-
-        bot.send_message(message.chat.id, response_text)
-
-    except KeyError:
-        bot.send_message(message.chat.id, "❌ Не удалось обработать данные игрока")
-    except Exception as e:
-        bot.send_message(message.chat.id, f"⚠️ Произошла ошибка: {str(e)}")
+        bot.answer_callback_query(call.id)
 
 
 bot.polling(none_stop=True)
