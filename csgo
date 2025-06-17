@@ -133,11 +133,11 @@ def callback_message(call):
         return
 
     text = (f"📊 Статистика {stats['nickname']} (карта: {stats['map']}):\n"
-            f"ELO: {stats['elo']}\n"
-            f"K/D: {stats['kd_ratio']}\n"
-            f"Винрейт: {stats['winrate']} %\n"
-            f"Средний урон гранатами за раунд: {stats['utility_damage']} HP\n"
-            f"Матчей сыграно: {stats['matches']}")
+            f"🔞ELO: {stats['elo']}\n"
+            f"💪K/D: {stats['kd_ratio']}\n"
+            f"✅Винрейт: {stats['winrate']} %\n"
+            f"🔥Средний урон гранатами за раунд: {stats['utility_damage']} HP\n"
+            f"🎮Матчей сыграно: {stats['matches']}")
 
     bot.edit_message_text(
         chat_id=chat_id,
